@@ -2,7 +2,7 @@
 <html lang="it">
 <head>
 <meta charset="UTF-8">
-<title>Totem CBP - Corpo Bandistico Pontolliese</title>
+<title>Totem CBP — bozza</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
 
@@ -69,6 +69,26 @@ html,body{
 
 /* ---- SCENE: impegni ---- */
 .s-impegni{padding:110px 100px 166px;}
+
+.s-prossimo{padding:110px 100px 166px;}
+.s-prossimo .eyebrow{
+  font-size:16px; letter-spacing:.03em; text-transform:uppercase;
+  color:var(--red); margin-bottom:20px; font-weight:600;
+}
+.s-prossimo h2{
+  font-family:'Fraunces',serif; font-weight:500; font-size:46px;
+  margin-bottom:22px; color:var(--cream); line-height:1.2;
+}
+.s-prossimo .quando{
+  font-size:22px; color:var(--blue-light); margin-bottom:8px;
+}
+.s-prossimo .luogo{
+  font-size:18px; color:rgba(245,243,238,0.75); margin-bottom:26px;
+}
+.s-prossimo .descrizione{
+  font-size:19px; line-height:1.6; color:rgba(245,243,238,0.9);
+  max-width:900px; white-space:pre-line;
+}
 .s-impegni h2{
   font-family:'Fraunces',serif;
   font-weight:500;
@@ -194,9 +214,9 @@ html,body{
 // CONFIGURAZIONE
 // ============================================================
 const API_BASE = "https://script.google.com/macros/s/AKfycbxuFgZhworHLHxzwSoricjXN9EA_aE5rs3DBqas4sj7RTRe6spL6RfsVr0DwoxhopQsjw/exec";
-const N_FOTO = 8;
+const N_FOTO = 12;
 const SECONDI_PER_SCENA_DEFAULT = 6;
-const DURATE_DEFAULT_SECONDI = { impegni: 6, compleanni: 6, avviso: 6, foto: 8, vuoto: 6 };
+const DURATE_DEFAULT_SECONDI = { impegni: 6, compleanni: 6, avviso: 6, foto: 8, vuoto: 6, prossimo_impegno: 8 };
 const REFRESH_DATI_MS = 5 * 60 * 1000; // ricarica i dati ogni 5 minuti
 
 // ============================================================
@@ -207,6 +227,7 @@ let fasciaSelezionata = null;
 let sezioni = [];      // sezioni di contenuto (senza foto), ricostruite ad ogni refresh dati/cambio fascia
 let sceneList = [];    // sezioni + foto intercalate, ricomposta ad ogni giro di rotazione
 let fotoCursor = 0;
+let cicliCompletati = 0;
 let idx = 0;
 let timerId = null;
 
@@ -319,12 +340,39 @@ function formatDataBreve(iso) {
   return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
 }
 
+function formatDataOraCompleta(d, tuttoIlGiorno) {
+  const giorno = d.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
+  if (tuttoIlGiorno) return giorno.charAt(0).toUpperCase() + giorno.slice(1);
+  const ora = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  return giorno.charAt(0).toUpperCase() + giorno.slice(1) + ' · ore ' + ora;
+}
+
+/** Toglie le righe che sono solo un hashtag di servizio (es. #banda, #majo, #pubblico),
+ *  usate per altri scopi e non da mostrare sul totem. */
+function pulisciDescrizione(desc) {
+  if (!desc) return '';
+  return desc.split('\n')
+    .filter(riga => !/^#\S+$/.test(riga.trim()))
+    .join('\n')
+    .trim();
+}
+
 function costruisciScene() {
   if (!fasciaSelezionata) return;
   const m = fasciaSelezionata.moduli;
   sezioni = [];
 
   if (m.impegni && stato.impegni.length) {
+    const prossimo = stato.impegni[0];
+    const dProssimo = new Date(prossimo.inizio);
+    sezioni.push({
+      type: 'prossimo_impegno',
+      titolo: prossimo.titolo,
+      quando: formatDataOraCompleta(dProssimo, prossimo.tuttoIlGiorno),
+      luogo: prossimo.luogo || '',
+      descrizione: pulisciDescrizione(prossimo.descrizione),
+    });
+
     sezioni.push({
       type: 'impegni',
       title: 'Prossimi appuntamenti',
@@ -370,6 +418,7 @@ function costruisciScene() {
   ctxLabel.textContent = fasciaSelezionata.etichetta;
   idx = 0;
   fotoCursor = 0;
+  cicliCompletati = 0;
   componiSceneList();
   renderScenes();
   scheduleNext();
@@ -413,6 +462,15 @@ function componiSceneList() {
 // RENDER
 // ============================================================
 function renderScene(scene) {
+  if (scene.type === 'prossimo_impegno') {
+    return `<div class="scene s-prossimo">
+      <div class="eyebrow">Prossimo appuntamento</div>
+      <h2>${scene.titolo}</h2>
+      <div class="quando">${scene.quando}</div>
+      ${scene.luogo ? `<div class="luogo">${scene.luogo}</div>` : ''}
+      ${scene.descrizione ? `<div class="descrizione">${scene.descrizione.replace(/\n/g, '<br>')}</div>` : ''}
+    </div>`;
+  }
   if (scene.type === 'impegni') {
     return `<div class="scene s-impegni"><h2>${scene.title}</h2>` +
       scene.items.map(it => `
@@ -479,9 +537,28 @@ function nextScene() {
   idx++;
   if (idx >= sceneList.length) {
     idx = 0;
+    cicliCompletati++;
+    const sogliaCicli = Number(stato.fotoconfig.cicli_rotazione_per_refresh_foto) || 3;
+    if (cicliCompletati >= sogliaCicli) {
+      cicliCompletati = 0;
+      rinnovaFoto(); // non bloccante: il giro in corso usa ancora il pool attuale
+    }
     componiSceneList(); // nuovo giro di rotazione: le foto cambiano
   }
   renderScenes();
+}
+
+/** Chiede al backend una nuova selezione casuale di foto, bypassando la cache lato
+ *  server — altrimenti richiedere di nuovo le stesse n foto entro 30 minuti
+ *  restituirebbe il risultato già in cache, vanificando il rinnovo. */
+async function rinnovaFoto() {
+  try {
+    const foto = await fetchJSON('foto', { n: N_FOTO, refresh: 1 });
+    controllaErrore('foto', foto);
+    stato.foto = foto;
+  } catch (err) {
+    console.error('Rinnovo foto non riuscito, continuo con il pool attuale:', err);
+  }
 }
 
 function scheduleNext() {
